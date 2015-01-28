@@ -279,7 +279,7 @@ netsnmp_access_interface_name_find(oid index)
 /**
  */
 netsnmp_interface_entry *
-netsnmp_access_interface_entry_create(const char *name, oid if_index)
+netsnmp_access_interface_entry_create(const char *localname, const char *ns, oid if_index)
 {
     netsnmp_interface_entry *entry =
         SNMP_MALLOC_TYPEDEF(netsnmp_interface_entry);
@@ -290,21 +290,32 @@ netsnmp_access_interface_entry_create(const char *name, oid if_index)
     if(NULL == entry)
         return NULL;
 
-    if(NULL != name)
-        entry->name = strdup(name);
+    if (localname && ns) {
+		netsnmp_assert( entry->name = malloc(strlen(ns)+1+strlen(localname)+1) );
+		sprintf(entry->name, "%s/%s", ns, localname);
+	} else if (localname) {
+		entry->name = strdup(localname);
+	} else {
+		return NULL;
+	}
+
+	if(NULL != localname)
+		entry->localname = strdup(localname);
+	if(NULL != ns)
+		entry->ns = strdup(ns);
 
     /*
      * get if index, and save name for reverse lookup
      */
 #ifndef NETSNMP_ACCESS_INTERFACE_NOARCH
     if (0 == if_index)
-        entry->index = netsnmp_access_interface_index_find(name);
+        entry->index = netsnmp_access_interface_index_find(localname);
     else
 #endif
         entry->index = if_index;
-    _access_interface_entry_save_name(name, entry->index);
+    _access_interface_entry_save_name(localname, entry->index);
 
-    entry->descr = strdup(name);
+	entry->descr = strdup(entry->name);
 
     /*
      * make some assumptions
@@ -337,6 +348,12 @@ netsnmp_access_interface_entry_free(netsnmp_interface_entry * entry)
 
     if (NULL != entry->name)
         free(entry->name);
+
+    if (NULL != entry->localname)
+        free(entry->localname);
+
+    if (NULL != entry->ns)
+        free(entry->ns);
 
     if (NULL != entry->descr)
         free(entry->descr);

@@ -202,7 +202,7 @@ ifTable_rowreq_ctx_init(ifTable_rowreq_ctx * rowreq_ctx,
      */
     if (NULL == user_init_ctx)
         rowreq_ctx->data.ifentry =
-            netsnmp_access_interface_entry_create(NULL, 0);
+            netsnmp_access_interface_entry_create(NULL, NULL, 0);
     else
         rowreq_ctx->data.ifentry =
             (netsnmp_interface_entry *) user_init_ctx;

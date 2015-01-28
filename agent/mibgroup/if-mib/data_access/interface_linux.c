@@ -6,6 +6,10 @@
 #include <net-snmp/net-snmp-config.h>
 #include <net-snmp/net-snmp-features.h>
 #include <net-snmp/net-snmp-includes.h>
+#include <dirent.h> /* for namespaces /var/run/netns/... */
+
+#define SNMP_IFINDEX_BITS 10
+#define SNMP_IFINDEX_BITS_POW 1024
 
 netsnmp_feature_require(fd_event_manager)
 netsnmp_feature_require(delete_prefix_info)
@@ -44,6 +48,11 @@ netsnmp_pci_error(char *msg, ...)
 	exit(1);
 }
 #endif
+
+/* sorting function for persistent netns order */
+static int cmpstringp(const void *p1, const void *p2) {
+	return strcmp(* (char * const *) p1, * (char * const *) p2);
+}
 
 #ifdef HAVE_LINUX_ETHTOOL_H
 #include <linux/types.h>
@@ -303,7 +312,7 @@ _arch_interface_flags_v4_get(netsnmp_interface_entry *entry)
      * get the retransmit time
      */
     snprintf(line,sizeof(line), proc_sys_retrans_time, 4,
-             entry->name);
+             entry->localname);
     if (!(fin = fopen(line, "r"))) {
         DEBUGMSGTL(("access:interface",
                     "Failed to open %s\n", line));
@@ -355,13 +364,13 @@ _arch_interface_description_get(netsnmp_interface_entry *entry)
 	return;
 
     snprintf(buf, sizeof(buf),
-	     "/sys/class/net/%s/device/vendor", entry->name);
+	     "/sys/class/net/%s/device/vendor", entry->localname);
 
     if (!sysfs_get_id(buf, &vendor_id))
 	return;
 
     snprintf(buf, sizeof(buf),
-	     "/sys/class/net/%s/device/device", entry->name);
+	     "/sys/class/net/%s/device/device", entry->localname);
 
     if (!sysfs_get_id(buf, &device_id))
 	return;
@@ -395,7 +404,7 @@ _arch_interface_flags_v6_get(netsnmp_interface_entry *entry)
      * get the retransmit time
      */
     snprintf(line,sizeof(line), proc_sys_retrans_time, 6,
-             entry->name);
+             entry->localname);
     if (!(fin = fopen(line, "r"))) {
         DEBUGMSGTL(("access:interface",
                     "Failed to open %s\n", line));
@@ -412,7 +421,7 @@ _arch_interface_flags_v6_get(netsnmp_interface_entry *entry)
      * get the forwarding status
      */
     snprintf(line, sizeof(line), "/proc/sys/net/ipv6/conf/%s/forwarding",
-             entry->name);
+             entry->localname);
     if (!(fin = fopen(line, "r"))) {
         DEBUGMSGTL(("access:interface",
                     "Failed to open %s\n", line));
@@ -428,7 +437,7 @@ _arch_interface_flags_v6_get(netsnmp_interface_entry *entry)
     /*
      * get the reachable time
      */
-    snprintf(line, sizeof(line), proc_sys_basereachable_time, 6, entry->name);
+    snprintf(line, sizeof(line), proc_sys_basereachable_time, 6, entry->localname);
     if (!(fin = fopen(line, "r"))) {
         DEBUGMSGTL(("access:interface",
                     "Failed to open %s\n", line));
@@ -546,7 +555,7 @@ _parse_stats(netsnmp_interface_entry *entry, char *stats, int expected)
     /*
      * linux previous to 1.3.~13 may miss transmitted loopback pkts: 
      */
-    if (!strcmp(entry->name, "lo") && rec_pkt > 0 && !snd_pkt)
+    if (!strcmp(entry->localname, "lo") && rec_pkt > 0 && !snd_pkt)
         snd_pkt = rec_pkt;
     
     /*
@@ -592,9 +601,9 @@ _parse_stats(netsnmp_interface_entry *entry, char *stats, int expected)
  * @retval -2 could not open /proc/net/dev
  * @retval -3 could not create entry (probably malloc)
  */
-int
-netsnmp_arch_interface_container_load(netsnmp_container* container,
-                                      u_int load_flags)
+static int
+netsnmp_arch_interface_container_load_entry(netsnmp_container* container,
+                                      u_int load_flags, const char *ns, int nsindex, const char *ifprefix)
 {
     FILE           *devin;
     char            line[256];
@@ -605,6 +614,8 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
     netsnmp_container *addr_container;
 #endif
 
+	netsnmp_assert(nsindex < SNMP_IFINDEX_BITS_POW);
+
     DEBUGMSGTL(("access:interface:container:arch", "load (flags %x)\n",
                 load_flags));
 
@@ -613,7 +624,15 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
         return -1;
     }
 
+	int ns_prev_fd, ns_fd;
+	if (ns) {
+		ns_prev_fd = open("/proc/self/ns/net", 0/*O_RDONLY*/);
+		ns_fd = open(ns, 0/*O_RDONLY*/);
+		setns(ns_fd, 0);
+	}
+
     if (!(devin = fopen("/proc/net/dev", "r"))) {
+		if (ns) { close(ns_fd); setns(ns_prev_fd, 0); close(ns_prev_fd); }
         DEBUGMSGTL(("access:interface",
                     "Failed to load Interface Table (linux1)\n"));
         NETSNMP_LOGONCE((LOG_ERR, "cannot open /proc/net/dev ...\n"));
@@ -625,6 +644,7 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
      */
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if(fd < 0) {
+		if (ns) { close(ns_fd); setns(ns_prev_fd, 0); close(ns_prev_fd); }
         snmp_log(LOG_ERR, "could not create socket\n");
         fclose(devin);
         return -2;
@@ -698,7 +718,13 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
          */
         *stats++ = 0; /* null terminate name */
 
-        if_index = netsnmp_arch_interface_index_find(ifstart);
+		/* interface index is composed of:
+		 * SNMP_IFINDEX_BITS (least significant) bits: the netns local iface index,
+		 * remaining bits: ns-index in the sorted list of namespaces
+		 * (this obviously gives a limit of 2^SNMP_IFINDEX_BITS interfaces
+		 * per network-namespace */
+        if_index = netsnmp_arch_interface_index_find(ifstart) | (nsindex << SNMP_IFINDEX_BITS);
+		DEBUGMSGTL(("access:interface:arch:netns", "netns id: %s -> %i\n", ns, if_index));
 
         /*
          * set address type flags.
@@ -724,8 +750,17 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
             continue;
         }
 
-        entry = netsnmp_access_interface_entry_create(ifstart, 0);
+		if (ifprefix && *ifprefix) {
+			entry = netsnmp_access_interface_entry_create(ifstart, ifprefix, if_index);
+			if (entry) {
+				DEBUGMSGTL(("access:interface:arch:netns", "found interface [%s] @%i in netns [%s]\n", entry->localname, entry->index, entry->ns));
+			}
+
+		} else {
+			entry = netsnmp_access_interface_entry_create(ifstart, NULL, if_index);
+		}
         if(NULL == entry) {
+			if (ns) { close(ns_fd); setns(ns_prev_fd, 0); close(ns_prev_fd); }
 #ifdef NETSNMP_ENABLE_IPV6
             netsnmp_access_ipaddress_container_free(addr_container, 0);
 #endif
@@ -780,7 +815,7 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
             
             for (pm = lmatch_if; pm->mi_name; pm++) {
                 len = strlen(pm->mi_name);
-                if (0 == strncmp(entry->name, pm->mi_name, len)) {
+                if (0 == strncmp(entry->localname, pm->mi_name, len)) {
                     entry->type = pm->mi_type;
                     break;
                 }
@@ -830,7 +865,7 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
                 defaultspeed = 0;
             }
             speed = netsnmp_linux_interface_get_if_speed(fd,
-                    entry->name, defaultspeed);
+                    entry->localname, defaultspeed);
             if (speed > 0xffffffffL) {
                 entry->speed = 0xffffffff;
             } else
@@ -894,13 +929,61 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
          * add to container
          */
         CONTAINER_INSERT(container, entry);
+		snmp_log(LOG_ERR, "interface inserted [%s / %s]\n",ns, ifstart);
     }
+	if (ns) { close(ns_fd); setns(ns_prev_fd, 0); close(ns_prev_fd); }
 #ifdef NETSNMP_ENABLE_IPV6
     netsnmp_access_ipaddress_container_free(addr_container, 0);
 #endif
     fclose(devin);
     close(fd);
     return 0;
+}
+
+int
+netsnmp_arch_interface_container_load(netsnmp_container* container,
+                                      u_int load_flags)
+{
+	int rc = 0;
+	struct dirent *dent;
+	DIR *dir;
+	char ns[128];
+	char nsdir[] = "/var/run/netns/";
+	char *nstable[SNMP_IFINDEX_BITS_POW];
+	int nsindex=1; /* netns index 0 is reserved for global ns */
+
+	const char *SNMP_NETNS = getenv("SNMP_NETNS");
+
+	if (SNMP_NETNS && (SNMP_NETNS[0]!='0') && (SNMP_NETNS[0]!='n')) {
+		dir = opendir(nsdir);
+		if (dir) {
+			while ((dent = readdir(dir)) != NULL) {
+				if (strcmp(dent->d_name, ".") == 0) continue;
+				if (strcmp(dent->d_name, "..") == 0) continue;
+				if (strlen(dent->d_name) >= sizeof(ns)-sizeof(nsdir)) {
+					DEBUGMSGTL(("access:interface:arch:netns", "skipping one netns (name too long)\n"));
+					continue;
+				}
+				snprintf(ns, sizeof(ns)-1, "%s%s", nsdir, dent->d_name);
+				nstable[nsindex++] = strdup(ns);
+			}
+			nstable[nsindex]=NULL;
+			closedir(dir);
+
+			qsort(&nstable, nsindex-1-1, sizeof(char*), cmpstringp);
+
+			for (nsindex=1; ; nsindex++) {
+				if (NULL == nstable[nsindex]) break;
+				DEBUGMSGTL(("access:interface:arch:netns", "following netns [%s] netns#%i\n", ns, nsindex));
+				rc |= netsnmp_arch_interface_container_load_entry(
+						container, load_flags, ns, nsindex, nstable[nsindex] + sizeof(nsdir)-1);
+			}
+		} else {
+			DEBUGMSGTL(("access:interface:arch:netns", "unable to read netns dir [%s]\n", nsdir));
+		}
+	}
+	rc |= netsnmp_arch_interface_container_load_entry(container, load_flags, NULL, 0, NULL);
+	return rc;
 }
 
 #ifndef NETSNMP_FEATURE_REMOVE_INTERFACE_ARCH_SET_ADMIN_STATUS

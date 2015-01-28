@@ -1416,7 +1416,9 @@ _mfd_ifTable_undo_setup_allocate(ifTable_rowreq_ctx *rowreq_ctx)
         else {
             rowreq_ctx->undo->ifentry =
                 netsnmp_access_interface_entry_create(rowreq_ctx->data.ifentry->
-                                                      name,
+                                                      localname,
+                                                      rowreq_ctx->data.ifentry->
+                                                      ns,
                                                       rowreq_ctx->data.ifentry->
                                                       index);
             if (NULL == rowreq_ctx->undo->ifentry) {

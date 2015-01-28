@@ -1,0 +1,32 @@
+This text comments on the partial support for network namespaces in net-snmp.
+
+Background:
+	When you move one of your Linux network interfaces into a network namespace,
+	net-snmp will no longer be able to collect data on that interface.
+	This modification starts to add some network-namespace awareness to the
+	if-mib part of net-snmp.
+	The new behaviour is disabled by default. You can enable it by setting
+	environment variable $SNMP_NETNS to "1".
+
+Approach:
+	* enumerate namespaces by accessing /var/run/netns/
+	* wrapping the appropriate netlink and ioctl action into a pair of setns() calls
+	* prefixing exposed interface names with the name of the netns and a "/"
+	* limit interface indices to SNMP_IFINDEX_BITS bits and use the remainder to
+	  store the netns index; this is done to achieve uniqueness for interface indices
+	  (namespace names are lexicographically sorted to get some persistence)
+
+Example Output:
+	.1.3.6.1.2.1.2.2.1.2.1 = STRING: lo
+	.1.3.6.1.2.1.2.2.1.2.2 = STRING: em1
+	.1.3.6.1.2.1.2.2.1.2.3 = STRING: docker0
+	.1.3.6.1.2.1.2.2.1.2.5 = STRING: tap0
+	.1.3.6.1.2.1.2.2.1.2.1025 = STRING: test3/lo
+	.1.3.6.1.2.1.2.2.1.2.1028 = STRING: test3/tap0
+	.1.3.6.1.2.1.2.2.1.2.2049 = STRING: test2/lo
+	.1.3.6.1.2.1.2.2.1.2.2052 = STRING: test2/tap0
+
+	(In this example there are 2 non-global namespaces "test2" and "test3".)
+
+Author / Copyright:
+	Travelping GmbH (http://travelping.com) -- Tobias Hintze <tobias.hintze+ip@travelping.com>

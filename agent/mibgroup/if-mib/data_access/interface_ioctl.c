@@ -126,7 +126,7 @@ netsnmp_access_interface_ioctl_physaddr_get(int fd,
          */
         memset(ifrq.ifr_hwaddr.sa_data, (0), IFHWADDRLEN);
         ifentry->paddr_len = IFHWADDRLEN;
-        rc = _ioctl_get(fd, SIOCGIFHWADDR, &ifrq, ifentry->name);
+        rc = _ioctl_get(fd, SIOCGIFHWADDR, &ifrq, ifentry->localname);
         if (rc < 0) {
             memset(ifentry->paddr, (0), IFHWADDRLEN);
             rc = -3; /* msg already logged */
@@ -243,7 +243,7 @@ netsnmp_access_interface_ioctl_flags_get(int fd,
 
     DEBUGMSGTL(("access:interface:ioctl", "flags_get\n"));
 
-    rc = _ioctl_get(fd, SIOCGIFFLAGS, &ifrq, ifentry->name);
+    rc = _ioctl_get(fd, SIOCGIFFLAGS, &ifrq, ifentry->localname);
     if (rc < 0) {
         ifentry->ns_flags &= ~NETSNMP_INTERFACE_FLAGS_HAS_IF_FLAGS;
         return rc; /* msg already logged */
@@ -311,7 +311,7 @@ netsnmp_access_interface_ioctl_flags_set(int fd,
     /*
      * sanity checks
      */
-    if((NULL == ifentry) || (NULL == ifentry->name)) {
+    if((NULL == ifentry) || (NULL == ifentry->localname)) {
         snmp_log(LOG_ERR, "invalid ifentry\n");
         return -1;
     }
@@ -327,7 +327,7 @@ netsnmp_access_interface_ioctl_flags_set(int fd,
         }
     }
 
-    strlcpy(ifrq.ifr_name, ifentry->name, sizeof(ifrq.ifr_name));
+    strlcpy(ifrq.ifr_name, ifentry->localname, sizeof(ifrq.ifr_name));
     rc = ioctl(fd, SIOCGIFFLAGS, &ifrq);
     if(rc < 0) {
         snmp_log(LOG_ERR,"error getting flags\n");
@@ -377,7 +377,7 @@ netsnmp_access_interface_ioctl_mtu_get(int fd,
 
     DEBUGMSGTL(("access:interface:ioctl", "mtu_get\n"));
 
-    rc = _ioctl_get(fd, SIOCGIFMTU, &ifrq, ifentry->name);
+    rc = _ioctl_get(fd, SIOCGIFMTU, &ifrq, ifentry->localname);
     if (rc < 0) {
         ifentry->mtu = 0;
         return rc; /* msg already logged */

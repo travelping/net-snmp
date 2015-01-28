@@ -115,7 +115,9 @@ _load(netsnmp_container *container)
     /*
      * Open a netlink socket
      */
+
     nlsk = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE);
+
     if (nlsk < 0) {
         snmp_log(LOG_ERR, "Could not open netlink socket : %s\n",
                  strerror(errno));

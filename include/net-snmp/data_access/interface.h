@@ -148,6 +148,8 @@ typedef struct netsnmp_interface_entry_s {
      *  Typically constant for a given interface
      */
     char   *name;
+    char   *localname;
+    char   *ns;
     char   *descr;
     int     type;
     u_int   speed;
@@ -239,7 +241,7 @@ void netsnmp_access_interface_container_free(netsnmp_container *container,
  * create/free an ifentry
  */
 netsnmp_interface_entry *
-netsnmp_access_interface_entry_create(const char *name, oid if_index);
+netsnmp_access_interface_entry_create(const char *localname, const char *ns, oid if_index);
 
 void netsnmp_access_interface_entry_free(netsnmp_interface_entry * entry);
 
