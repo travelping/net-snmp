@@ -10,6 +10,7 @@
 
 #define SNMP_IFINDEX_BITS 10
 #define SNMP_IFINDEX_BITS_POW 1024
+#define SNMP_NETNS_NAME_MAXLENGTH 48
 
 netsnmp_feature_require(fd_event_manager)
 netsnmp_feature_require(delete_prefix_info)
@@ -753,7 +754,8 @@ netsnmp_arch_interface_container_load_entry(netsnmp_container* container,
 		if (ifprefix && *ifprefix) {
 			entry = netsnmp_access_interface_entry_create(ifstart, ifprefix, if_index);
 			if (entry) {
-				DEBUGMSGTL(("access:interface:arch:netns", "found interface [%s] @%i in netns [%s]\n", entry->localname, entry->index, entry->ns));
+				DEBUGMSGTL(("access:interface:arch:netns", "found interface [%s] @%i in netns [%s]\n",
+							entry->localname, entry->index, entry->ns));
 			}
 
 		} else {
@@ -929,7 +931,7 @@ netsnmp_arch_interface_container_load_entry(netsnmp_container* container,
          * add to container
          */
         CONTAINER_INSERT(container, entry);
-		snmp_log(LOG_ERR, "interface inserted [%s / %s]\n",ns, ifstart);
+		snmp_log(LOG_DEBUG, "interface inserted [%s / %s]\n",ns, ifstart);
     }
 	if (ns) { close(ns_fd); setns(ns_prev_fd, 0); close(ns_prev_fd); }
 #ifdef NETSNMP_ENABLE_IPV6
@@ -950,7 +952,9 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
 	char ns[128];
 	char nsdir[] = "/var/run/netns/";
 	char *nstable[SNMP_IFINDEX_BITS_POW];
-	int nsindex=1; /* netns index 0 is reserved for global ns */
+	int nsindex=0;
+
+	netsnmp_assert(SNMP_NETNS_NAME_MAXLENGTH <= sizeof(ns)-sizeof(nsdir));
 
 	const char *SNMP_NETNS = getenv("SNMP_NETNS");
 
@@ -960,29 +964,40 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
 			while ((dent = readdir(dir)) != NULL) {
 				if (strcmp(dent->d_name, ".") == 0) continue;
 				if (strcmp(dent->d_name, "..") == 0) continue;
-				if (strlen(dent->d_name) >= sizeof(ns)-sizeof(nsdir)) {
-					DEBUGMSGTL(("access:interface:arch:netns", "skipping one netns (name too long)\n"));
+				if (strlen(dent->d_name) + 1 >= SNMP_NETNS_NAME_MAXLENGTH) {
+					snmp_log(LOG_ERR, "skipping one netns (name limit: %i)\n", SNMP_NETNS_NAME_MAXLENGTH);
 					continue;
 				}
+				if (nsindex >= sizeof(nstable)/sizeof(char*) - 1) { /* nstable[] is NULL terminated */
+					snmp_log(LOG_ERR,
+							"netsnmp_arch_interface_container_load: "
+							"too many network namespaces: %i.\n", nsindex);
+					break;
+				}
 				snprintf(ns, sizeof(ns)-1, "%s%s", nsdir, dent->d_name);
+				ns[sizeof(ns)-1] = '\0';
 				nstable[nsindex++] = strdup(ns);
 			}
 			nstable[nsindex]=NULL;
 			closedir(dir);
 
-			qsort(&nstable, nsindex-1-1, sizeof(char*), cmpstringp);
+			qsort(&nstable, nsindex, sizeof(char*), cmpstringp);
 
-			for (nsindex=1; ; nsindex++) {
+			for (nsindex=0; ; nsindex++) {
 				if (NULL == nstable[nsindex]) break;
 				DEBUGMSGTL(("access:interface:arch:netns", "following netns [%s] netns#%i\n", ns, nsindex));
 				rc |= netsnmp_arch_interface_container_load_entry(
-						container, load_flags, ns, nsindex, nstable[nsindex] + sizeof(nsdir)-1);
+						container, load_flags, nstable[nsindex], nsindex+1, nstable[nsindex] + sizeof(nsdir)-1);
+						/* index 0 is reserved for global ns (this nsindex+1) */
 			}
 		} else {
 			DEBUGMSGTL(("access:interface:arch:netns", "unable to read netns dir [%s]\n", nsdir));
 		}
+	} else {
+			DEBUGMSGTL(("access:interface:arch:netns", "netns disabled by env [%s]\n", SNMP_NETNS));
 	}
 	rc |= netsnmp_arch_interface_container_load_entry(container, load_flags, NULL, 0, NULL);
+	DEBUGMSGTL(("access:interface:arch:netns", "leaving netsnmp_arch_interface_container_load\n"));
 	return rc;
 }
 

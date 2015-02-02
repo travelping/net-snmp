@@ -213,7 +213,7 @@ static struct ifnet HRN_ifnet;
 #ifdef hpux11
 static char     HRN_savedName[MAX_PHYSADDR_LEN];
 #else
-static char     HRN_savedName[16];
+static char     HRN_savedName[64]; /* may include namespace prefix */
 #endif
 static u_short  HRN_savedFlags;
 static int      HRN_savedErrors;
@@ -257,7 +257,8 @@ int      HRN_index;
 void
 Save_HR_Network_Info(void)
 {
-    strcpy(HRN_savedName, HRN_name);
+    strncpy(HRN_savedName, HRN_name, sizeof(HRN_savedName)-1);
+    HRN_savedName[sizeof(HRN_savedName)-1] = 0;
 #if defined( USING_IF_MIB_IFTABLE_IFTABLE_DATA_ACCESS_MODULE )
     HRN_savedFlags  = HRN_ifnet->os_flags;
     HRN_savedErrors = HRN_ifnet->stats.ierrors + HRN_ifnet->stats.oerrors;
